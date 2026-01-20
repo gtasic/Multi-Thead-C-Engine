@@ -25,7 +25,7 @@ The engine includes Python scripts for statistical analysis, validating converge
 ### Monte Carlo Convergence (Funnel Plot)
 *Demonstration of numerical stability and variance reduction as $N$ increases.*
 
-![Convergence Plot](visualisation/convergence_plot.png) 
+![Convergence Plot](exotics/convergence_barrier.png) 
 *(Note: Replace with the path to your convergence graph)*
 
 ### Heston Model Paths
