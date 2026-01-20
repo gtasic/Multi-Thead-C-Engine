@@ -19,25 +19,36 @@ using namespace core;
             double theta;
             double xi;
             double rho;
+            double barrier;
         };
 
 
-        HestonModel(Parameters& params) : m_params(params), m_current_price(params.S0),m_current_variance(params.v0) ,m_rng(std::random_device{}()), m_dist(0.0,1.0){
+        HestonModel(Parameters& params) : m_params(params), m_current_price(params.S0), m_barrier(params.barrier), m_current_variance(params.v0) ,m_rng(std::random_device{}()), m_dist(0.0,1.0){
 
         }
         HestonModel(const HestonModel&) = delete;
 
       
 
-        
+        template<typename Observer>
+        void simulate_path(Engine& engine, std::chrono::nanoseconds dt, Timepoint horizon, Observer& observer){
+            schedule_next_step(engine, dt, horizon, observer);
+        }
 
         void simulate_path(Engine& engine, std::chrono::nanoseconds dt, Timepoint horizon){
-            schedule_next_step(engine,dt,horizon);
+            auto basic_observer = [](double){return true;};
+            schedule_next_step(engine,dt,horizon, basic_observer);
         }
 
         [[nodiscard]] double get_price() const {
             return m_current_price;
         }
+
+        [[nodiscard]] double get_barrier() const {
+            return m_barrier;
+        }
+
+
         void reset(){
             m_current_price = m_params.S0;
             m_current_variance = m_params.v0;
@@ -50,8 +61,8 @@ using namespace core;
         std::mt19937_64 m_rng;
         std::normal_distribution<double> m_dist;
 
-
-        void schedule_next_step(Engine& engine, std::chrono::nanoseconds dt, Timepoint horizon){
+        template<typename Observer>
+        void schedule_next_step(Engine& engine, std::chrono::nanoseconds dt, Timepoint horizon, Observer& observer){
             Timepoint now = engine.now();
 
             if (now >= horizon){
@@ -86,6 +97,11 @@ using namespace core;
                 double diffusion = sqrt_v * square_dt * W1;
 
                 m_current_price *= std::exp((m_params.mu - 0.5 * v_positive) * dt_years + diffusion);
+
+                if(!observer(m_current_price)){
+                    return;
+                }
+
                 schedule_next_step(engine, dt, horizon);
 
 
