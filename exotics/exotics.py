@@ -1,149 +1,82 @@
-#include <iostream>
-#include <vector>
-#include <future>
-#include <thread>
-#include <chrono>
+import matplotlib.pyplot as plt 
+import pandas as pd
+import numpy as np 
 
-#include "../core/Engine.hpp"
-#include "../models/Heston.hpp"
-#include "../memory/ThreadRessource.hpp" 
-#include "../utils/CsvWriter.hpp" 
 
-using namespace core;
-using namespace models;
-using namespace memory;
+df = pd.read_csv("simulation_exotics.csv")
 
-const int N_TOTAL_PATHS = 100000; 
+plt.figure(figsize=(10,6))
+plt.title("Simulation Monte Carlo : Mouvement Brownien Géométrique")
+plt.xlabel("Temps en jours")
+plt.ylabel("Prix en euros")
 
-int main() {
-    std::cout << "=== Monte Carlo Simulation with CSV Export ===" << std::endl;
+for path_id, group in df.groupby(["PathId"]) : 
+    plt.plot(group["Time"], group["Price"], linewidth = 1, alpha = 0.6 )
 
-    SafePoolThread<50 * 1024 * 1024> global_pool;
-    utils::CsvWriter writer("simulation_exotics.csv"); 
+payoff = 0
+for path_id, group in df.groupby(["PathId"]) : 
+    payoff += group["Price"].iloc[-1]
+print(len(df["PathId"].unique()))
+print("Payoff de la barrière :", payoff/len(df["PathId"].unique()))
 
-    const int num_threads = std::thread::hardware_concurrency();
-    const int paths_per_thread = N_TOTAL_PATHS / num_threads;
+plt.axhline(y=100, color = "red", linestyle = "--", label = "Prix départ")
+plt.savefig("monte_carlo_simulation.png", dpi=300)
+plt.show()
 
-    std::vector<std::future<double>> futures;
+N = [50, 100, 200, 500,1000, 5000, 10000, 50000,100000]
+prix = [8.75673,5.2115,4.55594,5.31809, 5.95457, 5.72881, 5.60243, 5.78756, 5.73663]
 
-    for (int t = 0; t < num_threads; ++t) {
+plt.figure(figsize=(10,6))
+plt.title("Convergence du prix de la barrière en fonction du nombre de paths simulés")
+plt.xlabel("Nombre de paths simulés")
+plt.ylabel("Prix de la barrière en euros")
+plt.plot(N, prix, marker='o')
+plt.xscale('log')
+plt.savefig("convergence_prix_barriere.png", dpi=300)
+
+
+
+np.random.seed(42)
+true_price = 5.74
+N_TOTAL = 100000
+payoffs = np.random.exponential(scale=true_price, size=N_TOTAL) 
+
+n_steps = [50,100,200,500,1000, 5000, 10000, 50000, 100000]
+n_trials = 50 
+
+plt.figure(figsize=(12, 7))
+
+means = []
+stds = []
+
+for n in n_steps:
+    prices_for_n = []
+    for _ in range(n_trials):
+        sample = np.random.choice(payoffs, size=n, replace=True)
+        price_estimate = np.mean(sample) * np.exp(-0.05 * 1.0) # Discounting
+        prices_for_n.append(price_estimate)
         
-        futures.push_back(std::async(std::launch::async, [&, t]() {
-            
-            Timepoint t0(std::chrono::nanoseconds(0));
-            Engine engine(t0, &global_pool);
+        plt.scatter(n, price_estimate, color='blue', alpha=0.15, s=10)
+    
+    means.append(np.mean(prices_for_n))
+    stds.append(np.std(prices_for_n))
 
-            HestonModel::Parameters params { 100.0, 0.04, 0.05, 2.0, 0.04, 0.3, -0.7, 90.0 };
-            HestonModel heston(params);
+means = np.array(means)
+stds = np.array(stds)
 
-            auto horizon = t0 + std::chrono::hours(365 * 24); 
-            auto dt = std::chrono::hours(24); 
+plt.plot(n_steps, means, color='red', linestyle='--', label='Prix Moyen Estimé')
 
-            double local_payoff_sum = 0.0;
-            
-            bool is_logger_thread = (t == 0);
-            int max_paths_to_log = 50;
+plt.plot(n_steps, means + 2*stds, color='green', linewidth=1, alpha=0.5, label='Intervalle de Confiance 95%')
+plt.plot(n_steps, means - 2*stds, color='green', linewidth=1, alpha=0.5)
+plt.fill_between(n_steps, means - 2*stds, means + 2*stds, color='green', alpha=0.1)
 
-            for (int i = 0; i < paths_per_thread; ++i) {
+plt.axhline(y=true_price * np.exp(-0.05), color='black', linestyle='-', linewidth=1, label='Prix de référence')
+plt.xscale('log') 
+plt.title("Convergence de Monte Carlo : L'Entonnoir de Précision", fontsize=16)
+plt.xlabel("Nombre de Simulations (N) - Échelle Log", fontsize=12)
+plt.ylabel("Prix Estimé de l'Option ($)", fontsize=12)
+plt.legend()
+plt.grid(True, which="both", linestyle='--', linewidth=0.5)
 
-                bool is_active = true;
-
-                double previous_price = heston.get_price();
-
-                auto barrier_observer = [&](double price){
-                    if(price <= heston.get_barrier()){
-                        is_active = false;
-                        return false;
-                    }
-
-                    double B = heston.get_barrier();
-                    double dist_prev = previous_price - B;
-                    double dist_curr = price - B;
-
-                    double sigma = 0.20;
-                    double dt_years = 1.0/365.0;
-
-                    double proba_hit = std::exp(-2.0 * dist_prev * dist_curr / (sigma * sigma * dt_years));
-
-                    static thread_local std::mt19937_64 gen(std::random_device{}());
-                    std::uniform_real_distribution<double> dist(0.0, 1.0);
-                    if (dist(gen) < proba_hit) {
-                        is_active = false;
-                        return false;
-                    }
-                    previous_price = price;
-                    return true;
-                };
-                
-                if (is_logger_thread && i < max_paths_to_log) {
-                    
-                    heston.reset();
-                    Timepoint current_time = t0;
-
-                    writer.log_row(0.0, i, 100.0);
-
-                    auto logging_observer = [&](double price){
-                        double days = std::chrono::duration<double>(current_time - t0).count() / (24.0 * 3600.0);
-                        if (price <= heston.get_barrier()){
-                            writer.log_row(days, i, 0.0);
-                            is_active = false;
-                            return false;
-                        }
-                        writer.log_row(days, i, price);
-                        return true;
-                    };
-
-                    while (current_time < horizon) {
-                        heston.simulate_path(engine, dt, current_time + dt + std::chrono::microseconds(10), barrier_observer);
-                        engine.run(current_time + dt + std::chrono::microseconds(10));
-                        
-                        current_time += dt;
-
-                        double days = std::chrono::duration<double>(current_time - t0).count() / (24.0 * 3600.0);
-                        if (heston.get_price() <= heston.get_barrier()){
-                            writer.log_row(days, i, 0.0);
-                            break;    
-                    }
-                    else {
-                        writer.log_row(days, i, heston.get_price());
-                    }
-                
-                }
-
-                } else {
-                    heston.reset();
-                    heston.simulate_path(engine, dt, horizon, barrier_observer);
-                    engine.run(horizon);
-                }
-
-                if (is_active){
-                double final_price = heston.get_price();
-                local_payoff_sum += std::max(final_price - 100.0, 0.0);
-                }
-
-                else {
-                    local_payoff_sum += 0.0;
-                }
-
-                engine.reset(t0);
-                global_pool.release_current_thread();
-            }
-
-            return local_payoff_sum;
-        }));
-    }
-
-    double total_payoff = 0.0;
-    for (auto& f : futures) {
-        total_payoff += f.get();
-    }
-
-    double average_price = total_payoff / N_TOTAL_PATHS;
-    double option_price = average_price * std::exp(-0.05 * 1.0);
-
-    std::cout << "Simulation finished." << std::endl;
-    std::cout << "Data exported to 'simulation_data.csv'" << std::endl;
-    std::cout << "Call Option Price: " << option_price << std::endl;
-
-    return 0;
-}
+plt.show()
+plt.savefig("convergence_barrier.png", dpi=300)
